@@ -1,5 +1,6 @@
 package org.thoughtcrime.securesms.keyvalue
 
+import androidx.annotation.VisibleForTesting
 import androidx.annotation.WorkerThread
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
@@ -9,7 +10,6 @@ import com.mobilecoin.lib.Mnemonics
 import com.mobilecoin.lib.exceptions.BadMnemonicException
 import org.signal.core.util.logging.Log
 import org.thoughtcrime.securesms.database.SignalDatabase
-import org.thoughtcrime.securesms.keyvalue.PaymentsValues.WalletRestoreResult
 import org.thoughtcrime.securesms.lock.v2.PinKeyboardType
 import org.thoughtcrime.securesms.payments.Balance
 import org.thoughtcrime.securesms.payments.Entropy
@@ -23,8 +23,6 @@ import org.thoughtcrime.securesms.storage.StorageSyncHelper
 import org.thoughtcrime.securesms.util.FeatureFlags
 import org.thoughtcrime.securesms.util.Util
 import org.whispersystems.signalservice.api.payments.Money
-import java.lang.AssertionError
-import java.lang.IllegalStateException
 import java.math.BigDecimal
 import java.util.Arrays
 import java.util.Currency
@@ -36,7 +34,6 @@ internal class PaymentsValues internal constructor(store: KeyValueStore) : Signa
     private val TAG = Log.tag(PaymentsValues::class.java)
 
     private const val PAYMENTS_ENTROPY = "payments_entropy"
-    private const val MOB_PAYMENTS_ENABLED = "mob_payments_enabled"
     private const val MOB_LEDGER = "mob_ledger"
     private const val PAYMENTS_CURRENT_CURRENCY = "payments_current_currency"
     private const val DEFAULT_CURRENCY_CODE = "GBP"
@@ -46,9 +43,27 @@ internal class PaymentsValues internal constructor(store: KeyValueStore) : Signa
     private const val SHOW_CASHING_OUT_INFO_CARD = "mob_payments_show_cashing_out_info_card"
     private const val SHOW_RECOVERY_PHRASE_INFO_CARD = "mob_payments_show_recovery_phrase_info_card"
     private const val SHOW_UPDATE_PIN_INFO_CARD = "mob_payments_show_update_pin_info_card"
+    private const val PAYMENT_LOCK_ENABLED = "mob_payments_payment_lock_enabled"
+    private const val PAYMENT_LOCK_TIMESTAMP = "mob_payments_payment_lock_timestamp"
+    private const val PAYMENT_LOCK_SKIP_COUNT = "mob_payments_payment_lock_skip_count"
 
     private val LARGE_BALANCE_THRESHOLD = Money.mobileCoin(BigDecimal.valueOf(500))
+
+    @VisibleForTesting
+    const val MOB_PAYMENTS_ENABLED = "mob_payments_enabled"
   }
+
+  var paymentLock
+    get() = getBoolean(PAYMENT_LOCK_ENABLED, false)
+    set(enabled) = putBoolean(PAYMENT_LOCK_ENABLED, enabled)
+
+  var paymentLockTimestamp
+    get() = getLong(PAYMENT_LOCK_TIMESTAMP, 0)
+    set(timestamp) = putLong(PAYMENT_LOCK_TIMESTAMP, timestamp)
+
+  var paymentLockSkipCount
+    get() = getInteger(PAYMENT_LOCK_SKIP_COUNT, 0)
+    set(count) = putInteger(PAYMENT_LOCK_SKIP_COUNT, count)
 
   private val liveCurrentCurrency: MutableLiveData<Currency> by lazy { MutableLiveData(currentCurrency()) }
   private val liveMobileCoinLedger: MutableLiveData<MobileCoinLedgerWrapper> by lazy { MutableLiveData(mobileCoinLatestFullLedger()) }
@@ -92,16 +107,20 @@ internal class PaymentsValues internal constructor(store: KeyValueStore) : Signa
    */
   val paymentsAvailability: PaymentsAvailability
     get() {
-      if (!SignalStore.account().isRegistered ||
-        !GeographicalRestrictions.e164Allowed(Recipient.self().requireE164())
-      ) {
+      if (!SignalStore.account().isRegistered) {
         return PaymentsAvailability.NOT_IN_REGION
       }
       return if (FeatureFlags.payments()) {
         if (mobileCoinPaymentsEnabled()) {
-          PaymentsAvailability.WITHDRAW_AND_SEND
-        } else {
+          if (GeographicalRestrictions.e164Allowed(SignalStore.account().e164)) {
+            PaymentsAvailability.WITHDRAW_AND_SEND
+          } else {
+            return PaymentsAvailability.WITHDRAW_ONLY
+          }
+        } else if (GeographicalRestrictions.e164Allowed(SignalStore.account().e164)) {
           PaymentsAvailability.REGISTRATION_AVAILABLE
+        } else {
+          PaymentsAvailability.NOT_IN_REGION
         }
       } else {
         if (mobileCoinPaymentsEnabled()) {

@@ -10,8 +10,8 @@ import androidx.annotation.Nullable;
 
 import org.signal.core.util.logging.Log;
 import org.thoughtcrime.securesms.R;
-import org.thoughtcrime.securesms.util.CursorUtil;
-import org.thoughtcrime.securesms.util.SqlUtil;
+import org.signal.core.util.CursorUtil;
+import org.signal.core.util.SqlUtil;
 
 import java.util.LinkedList;
 import java.util.List;
@@ -164,6 +164,12 @@ public class DraftDatabase extends Database {
   }
 
   public static class Drafts extends LinkedList<Draft> {
+    public void addIfNotNull(@Nullable Draft draft) {
+      if (draft != null) {
+        add(draft);
+      }
+    }
+
     public @Nullable Draft getDraftOfType(String type) {
       for (Draft draft : this) {
         if (type.equals(draft.getType())) {

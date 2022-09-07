@@ -5,17 +5,17 @@ import android.content.SharedPreferences;
 import android.hardware.Camera.CameraInfo;
 import android.net.Uri;
 import android.os.Build;
-import android.preference.PreferenceManager;
 import android.provider.Settings;
 
 import androidx.annotation.ArrayRes;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
+import androidx.preference.PreferenceManager;
 
 import org.greenrobot.eventbus.EventBus;
 import org.signal.core.util.logging.Log;
-import org.signal.zkgroup.profiles.ProfileKey;
+import org.signal.libsignal.zkgroup.profiles.ProfileKey;
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.backup.BackupProtos;
 import org.thoughtcrime.securesms.crypto.ProfileKeyUtil;
@@ -28,10 +28,7 @@ import org.thoughtcrime.securesms.lock.RegistrationLockReminders;
 import org.thoughtcrime.securesms.notifications.NotificationChannels;
 import org.thoughtcrime.securesms.preferences.widgets.NotificationPrivacyPreference;
 import org.thoughtcrime.securesms.recipients.Recipient;
-import org.whispersystems.libsignal.util.Medium;
 
-import java.io.IOException;
-import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -60,7 +57,6 @@ public class TextSecurePreferences {
   public  static final String ENABLE_MANUAL_MMS_PREF           = "pref_enable_manual_mms";
 
   private static final String LAST_VERSION_CODE_PREF           = "last_version_code";
-  private static final String LAST_EXPERIENCE_VERSION_PREF     = "last_experience_version_code";
   public  static final String RINGTONE_PREF                    = "pref_key_ringtone";
   public  static final String VIBRATE_PREF                     = "pref_key_vibrate";
   private static final String NOTIFICATION_PREF                = "pref_key_enable_notifications";
@@ -90,12 +86,10 @@ public class TextSecurePreferences {
   private static final String SHOW_INVITE_REMINDER_PREF        = "pref_show_invite_reminder";
   public  static final String MESSAGE_BODY_TEXT_SIZE_PREF      = "pref_message_body_text_size";
 
-  private static final String SIGNED_PREKEY_REGISTERED_PREF    = "pref_signed_prekey_registered";
   private static final String WIFI_SMS_PREF                    = "pref_wifi_sms";
 
   private static final String RATING_LATER_PREF                = "pref_rating_later";
   private static final String RATING_ENABLED_PREF              = "pref_rating_enabled";
-  private static final String SIGNED_PREKEY_FAILURE_COUNT_PREF = "pref_signed_prekey_failure_count";
 
   public  static final String REPEAT_ALERTS_PREF               = "pref_repeat_alerts";
   public  static final String NOTIFICATION_PRIVACY_PREF        = "pref_notification_privacy";
@@ -127,10 +121,6 @@ public class TextSecurePreferences {
   public static final String CALL_NOTIFICATIONS_PREF = "pref_call_notifications";
   public static final String CALL_RINGTONE_PREF      = "pref_call_ringtone";
   public static final String CALL_VIBRATE_PREF       = "pref_call_vibrate";
-
-  private static final String NEXT_PRE_KEY_ID          = "pref_next_pre_key_id";
-  private static final String ACTIVE_SIGNED_PRE_KEY_ID = "pref_active_signed_pre_key_id";
-  private static final String NEXT_SIGNED_PRE_KEY_ID   = "pref_next_signed_pre_key_id";
 
   public  static final String BACKUP                      = "pref_backup";
   public  static final String BACKUP_ENABLED              = "pref_backup_enabled";
@@ -230,8 +220,35 @@ public class TextSecurePreferences {
                                                                 MEDIA_DOWNLOAD_WIFI_PREF,
                                                                 MEDIA_DOWNLOAD_ROAMING_PREF};
 
+  private static volatile SharedPreferences preferences = null;
+
+  public static long getPreferencesToSaveToBackupCount(@NonNull Context context) {
+    SharedPreferences preferences = getSharedPreferences(context);
+    long              count       = 0;
+
+    for (String booleanPreference : booleanPreferencesToBackup) {
+      if (preferences.contains(booleanPreference)) {
+        count++;
+      }
+    }
+
+    for (String stringPreference : stringPreferencesToBackup) {
+      if (preferences.contains(stringPreference)) {
+        count++;
+      }
+    }
+
+    for (String stringSetPreference : stringSetPreferencesToBackup) {
+      if (preferences.contains(stringSetPreference)) {
+        count++;
+      }
+    }
+
+    return count;
+  }
+
   public static List<BackupProtos.SharedPreference> getPreferencesToSaveToBackup(@NonNull Context context) {
-    SharedPreferences                   preferences  = PreferenceManager.getDefaultSharedPreferences(context);
+    SharedPreferences                   preferences  = getSharedPreferences(context);
     List<BackupProtos.SharedPreference> backupProtos = new ArrayList<>();
     String                              defaultFile  = context.getPackageName() + "_preferences";
 
@@ -316,7 +333,7 @@ public class TextSecurePreferences {
 
   public static void clearRegistrationLockV1(@NonNull Context context) {
     //noinspection deprecation
-    PreferenceManager.getDefaultSharedPreferences(context)
+    getSharedPreferences(context)
                      .edit()
                      .remove(REGISTRATION_LOCK_PIN_PREF_V1)
                      .apply();
@@ -374,30 +391,6 @@ public class TextSecurePreferences {
 
   public static long getNextBackupTime(@NonNull Context context) {
     return getLongPreference(context, BACKUP_TIME, -1);
-  }
-
-  public static int getNextPreKeyId(@NonNull Context context) {
-    return getIntegerPreference(context, NEXT_PRE_KEY_ID, new SecureRandom().nextInt(Medium.MAX_VALUE));
-  }
-
-  public static void setNextPreKeyId(@NonNull Context context, int value) {
-    setIntegerPrefrence(context, NEXT_PRE_KEY_ID, value);
-  }
-
-  public static int getNextSignedPreKeyId(@NonNull Context context) {
-    return getIntegerPreference(context, NEXT_SIGNED_PRE_KEY_ID, new SecureRandom().nextInt(Medium.MAX_VALUE));
-  }
-
-  public static void setNextSignedPreKeyId(@NonNull Context context, int value) {
-    setIntegerPrefrence(context, NEXT_SIGNED_PRE_KEY_ID, value);
-  }
-
-  public static int getActiveSignedPreKeyId(@NonNull Context context) {
-    return getIntegerPreference(context, ACTIVE_SIGNED_PRE_KEY_ID, -1);
-  }
-
-  public static void setActiveSignedPreKeyId(@NonNull Context context, int value) {
-    setIntegerPrefrence(context, ACTIVE_SIGNED_PRE_KEY_ID, value);;
   }
 
   public static void setNeedsSqlCipherMigration(@NonNull Context context, boolean value) {
@@ -507,7 +500,7 @@ public class TextSecurePreferences {
    * @deprecated Use {@link SettingsValues#getMessageFontSize()} via {@link org.thoughtcrime.securesms.keyvalue.SignalStore} instead.
    */
   public static int getMessageBodyTextSize(Context context) {
-    return Integer.valueOf(getStringPreference(context, MESSAGE_BODY_TEXT_SIZE_PREF, "16"));
+    return Integer.parseInt(getStringPreference(context, MESSAGE_BODY_TEXT_SIZE_PREF, "16"));
   }
 
   public static boolean isTurnOnly(Context context) {
@@ -539,21 +532,13 @@ public class TextSecurePreferences {
     return getBooleanPreference(context, MULTI_DEVICE_PROVISIONED_PREF, false);
   }
 
-  public static void setSignedPreKeyFailureCount(Context context, int value) {
-    setIntegerPrefrence(context, SIGNED_PREKEY_FAILURE_COUNT_PREF, value);
-  }
-
-  public static int getSignedPreKeyFailureCount(Context context) {
-    return getIntegerPreference(context, SIGNED_PREKEY_FAILURE_COUNT_PREF, 0);
-  }
-
   @Deprecated
   public static NotificationPrivacyPreference getNotificationPrivacy(Context context) {
     return new NotificationPrivacyPreference(getStringPreference(context, NOTIFICATION_PRIVACY_PREF, "all"));
   }
 
   public static boolean isNewContactsNotificationEnabled(Context context) {
-    return getBooleanPreference(context, NEW_CONTACTS_NOTIFICATIONS, true);
+    return getBooleanPreference(context, NEW_CONTACTS_NOTIFICATIONS, false);
   }
 
   public static long getRatingLaterTimestamp(Context context) {
@@ -585,14 +570,6 @@ public class TextSecurePreferences {
       Log.w(TAG, e);
       return 0;
     }
-  }
-
-  public static boolean isSignedPreKeyRegistered(Context context) {
-    return getBooleanPreference(context, SIGNED_PREKEY_REGISTERED_PREF, false);
-  }
-
-  public static void setSignedPreKeyRegistered(Context context, boolean value) {
-    setBooleanPreference(context, SIGNED_PREKEY_REGISTERED_PREF, value);
   }
 
   @Deprecated
@@ -674,7 +651,7 @@ public class TextSecurePreferences {
   }
 
   public static boolean isPasswordDisabled(Context context) {
-    return getBooleanPreference(context, DISABLE_PASSPHRASE_PREF, false);
+    return getBooleanPreference(context, DISABLE_PASSPHRASE_PREF, true);
   }
 
   public static void setPasswordDisabled(Context context, boolean disabled) {
@@ -789,25 +766,17 @@ public class TextSecurePreferences {
     return getIntegerPreference(context, LAST_VERSION_CODE_PREF, Util.getCanonicalVersionCode());
   }
 
-  public static void setLastVersionCode(Context context, int versionCode) throws IOException {
+  public static void setLastVersionCode(Context context, int versionCode) {
     if (!setIntegerPrefrenceBlocking(context, LAST_VERSION_CODE_PREF, versionCode)) {
-      throw new IOException("couldn't write version code to sharedpreferences");
+      throw new AssertionError("couldn't write version code to sharedpreferences");
     }
-  }
-
-  public static int getLastExperienceVersionCode(Context context) {
-    return getIntegerPreference(context, LAST_EXPERIENCE_VERSION_PREF, 0);
-  }
-
-  public static void setLastExperienceVersionCode(Context context, int versionCode) {
-    setIntegerPrefrence(context, LAST_EXPERIENCE_VERSION_PREF, versionCode);
   }
 
   /**
    * @deprecated Use {@link SettingsValues#getTheme()} via {@link org.thoughtcrime.securesms.keyvalue.SignalStore} instead.
    */
   public static String getTheme(Context context) {
-    return getStringPreference(context, THEME_PREF, DynamicTheme.systemThemeAvailable() ? DynamicTheme.SYSTEM : DynamicTheme.LIGHT);
+    return getStringPreference(context, THEME_PREF, DynamicTheme.systemThemeAvailable() ? "system" : "light");
   }
 
   public static boolean isShowInviteReminders(Context context) {
@@ -1124,47 +1093,47 @@ public class TextSecurePreferences {
   }
 
   public static void setBooleanPreference(Context context, String key, boolean value) {
-    PreferenceManager.getDefaultSharedPreferences(context).edit().putBoolean(key, value).apply();
+    getSharedPreferences(context).edit().putBoolean(key, value).apply();
   }
 
   public static boolean getBooleanPreference(Context context, String key, boolean defaultValue) {
-    return PreferenceManager.getDefaultSharedPreferences(context).getBoolean(key, defaultValue);
+    return getSharedPreferences(context).getBoolean(key, defaultValue);
   }
 
   public static void setStringPreference(Context context, String key, String value) {
-    PreferenceManager.getDefaultSharedPreferences(context).edit().putString(key, value).apply();
+    getSharedPreferences(context).edit().putString(key, value).apply();
   }
 
   public static String getStringPreference(Context context, String key, String defaultValue) {
-    return PreferenceManager.getDefaultSharedPreferences(context).getString(key, defaultValue);
+    return getSharedPreferences(context).getString(key, defaultValue);
   }
 
   public static int getIntegerPreference(Context context, String key, int defaultValue) {
-    return PreferenceManager.getDefaultSharedPreferences(context).getInt(key, defaultValue);
+    return getSharedPreferences(context).getInt(key, defaultValue);
   }
 
   private static void setIntegerPrefrence(Context context, String key, int value) {
-    PreferenceManager.getDefaultSharedPreferences(context).edit().putInt(key, value).apply();
+    getSharedPreferences(context).edit().putInt(key, value).apply();
   }
 
   private static boolean setIntegerPrefrenceBlocking(Context context, String key, int value) {
-    return PreferenceManager.getDefaultSharedPreferences(context).edit().putInt(key, value).commit();
+    return getSharedPreferences(context).edit().putInt(key, value).commit();
   }
 
   public static long getLongPreference(Context context, String key, long defaultValue) {
-    return PreferenceManager.getDefaultSharedPreferences(context).getLong(key, defaultValue);
+    return getSharedPreferences(context).getLong(key, defaultValue);
   }
 
   private static void setLongPreference(Context context, String key, long value) {
-    PreferenceManager.getDefaultSharedPreferences(context).edit().putLong(key, value).apply();
+    getSharedPreferences(context).edit().putLong(key, value).apply();
   }
 
   private static void removePreference(Context context, String key) {
-    PreferenceManager.getDefaultSharedPreferences(context).edit().remove(key).apply();
+    getSharedPreferences(context).edit().remove(key).apply();
   }
 
   private static Set<String> getStringSetPreference(Context context, String key, Set<String> defaultValues) {
-    final SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
+    final SharedPreferences prefs = getSharedPreferences(context);
     if (prefs.contains(key)) {
       return prefs.getStringSet(key, Collections.<String>emptySet());
     } else {
@@ -1179,6 +1148,13 @@ public class TextSecurePreferences {
     SignalDatabase.recipients().setProfileKey(self.getId(), newProfileKey);
 
     ApplicationDependencies.getGroupsV2Authorization().clear();
+  }
+
+  private static SharedPreferences getSharedPreferences(Context context) {
+    if (preferences == null) {
+      preferences = PreferenceManager.getDefaultSharedPreferences(context);
+    }
+    return preferences;
   }
 
   // NEVER rename these -- they're persisted by name

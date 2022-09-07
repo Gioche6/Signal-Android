@@ -8,6 +8,7 @@ import android.widget.TextView;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.lifecycle.LifecycleOwner;
 import androidx.recyclerview.widget.DiffUtil;
 import androidx.recyclerview.widget.ListAdapter;
 import androidx.recyclerview.widget.RecyclerView;
@@ -21,7 +22,6 @@ import org.thoughtcrime.securesms.mms.GlideRequests;
 import org.thoughtcrime.securesms.util.CachedInflater;
 import org.thoughtcrime.securesms.util.ViewUtil;
 
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -40,6 +40,7 @@ class ConversationListAdapter extends ListAdapter<Conversation, RecyclerView.Vie
     SELECTION
   }
 
+  private final LifecycleOwner              lifecycleOwner;
   private final GlideRequests               glideRequests;
   private final OnConversationClickListener onConversationClickListener;
   private       ConversationSet             selectedConversations = new ConversationSet();
@@ -47,11 +48,13 @@ class ConversationListAdapter extends ListAdapter<Conversation, RecyclerView.Vie
 
   private PagingController pagingController;
 
-  protected ConversationListAdapter(@NonNull GlideRequests glideRequests,
+  protected ConversationListAdapter(@NonNull LifecycleOwner lifecycleOwner,
+                                    @NonNull GlideRequests glideRequests,
                                     @NonNull OnConversationClickListener onConversationClickListener)
   {
     super(new ConversationDiffCallback());
 
+    this.lifecycleOwner              = lifecycleOwner;
     this.glideRequests               = glideRequests;
     this.onConversationClickListener = onConversationClickListener;
   }
@@ -128,7 +131,8 @@ class ConversationListAdapter extends ListAdapter<Conversation, RecyclerView.Vie
       ConversationViewHolder casted       = (ConversationViewHolder) holder;
       Conversation           conversation = Objects.requireNonNull(getItem(position));
 
-      casted.getConversationListItem().bind(conversation.getThreadRecord(),
+      casted.getConversationListItem().bind(lifecycleOwner,
+                                            conversation.getThreadRecord(),
                                             glideRequests,
                                             Locale.getDefault(),
                                             typingSet,

@@ -1,8 +1,11 @@
 package org.thoughtcrime.securesms.giph.mp4;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.util.AttributeSet;
+import android.view.TextureView;
+import android.view.View;
 import android.widget.FrameLayout;
 
 import androidx.annotation.NonNull;
@@ -47,12 +50,6 @@ public final class GiphyMp4VideoPlayer extends FrameLayout implements DefaultLif
     inflate(context, R.layout.gif_player, this);
 
     this.exoView = findViewById(R.id.video_view);
-  }
-
-  @Override
-  protected void onDetachedFromWindow() {
-    Log.d(TAG, "onDetachedFromWindow");
-    super.onDetachedFromWindow();
   }
 
   @Override
@@ -103,6 +100,12 @@ public final class GiphyMp4VideoPlayer extends FrameLayout implements DefaultLif
     }
   }
 
+  void pause() {
+    if (exoPlayer != null) {
+      exoPlayer.pause();
+    }
+  }
+
   void stop() {
     if (exoPlayer != null) {
       exoPlayer.stop();
@@ -121,5 +124,14 @@ public final class GiphyMp4VideoPlayer extends FrameLayout implements DefaultLif
 
   void setResizeMode(@AspectRatioFrameLayout.ResizeMode int resizeMode) {
     exoView.setResizeMode(resizeMode);
+  }
+
+  @Nullable Bitmap getBitmap() {
+    final View view = exoView.getVideoSurfaceView();
+    if (view instanceof TextureView) {
+      return ((TextureView) view).getBitmap();
+    }
+
+    return null;
   }
 }

@@ -7,14 +7,16 @@ import androidx.fragment.app.viewModels
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import org.signal.core.util.Hex
 import org.signal.core.util.concurrent.SignalExecutors
+import org.thoughtcrime.securesms.MainActivity
 import org.thoughtcrime.securesms.R
 import org.thoughtcrime.securesms.components.settings.DSLConfiguration
-import org.thoughtcrime.securesms.components.settings.DSLSettingsAdapter
 import org.thoughtcrime.securesms.components.settings.DSLSettingsFragment
 import org.thoughtcrime.securesms.components.settings.DSLSettingsText
 import org.thoughtcrime.securesms.components.settings.configure
 import org.thoughtcrime.securesms.database.SignalDatabase
+import org.thoughtcrime.securesms.dependencies.ApplicationDependencies
 import org.thoughtcrime.securesms.groups.GroupId
 import org.thoughtcrime.securesms.keyvalue.SignalStore
 import org.thoughtcrime.securesms.recipients.Recipient
@@ -22,12 +24,10 @@ import org.thoughtcrime.securesms.recipients.RecipientForeverObserver
 import org.thoughtcrime.securesms.recipients.RecipientId
 import org.thoughtcrime.securesms.subscription.Subscriber
 import org.thoughtcrime.securesms.util.Base64
-import org.thoughtcrime.securesms.util.Hex
 import org.thoughtcrime.securesms.util.SpanUtil
 import org.thoughtcrime.securesms.util.Util
+import org.thoughtcrime.securesms.util.adapter.mapping.MappingAdapter
 import org.thoughtcrime.securesms.util.livedata.Store
-import org.whispersystems.signalservice.api.push.ACI
-import org.whispersystems.signalservice.api.push.PNI
 import java.util.Objects
 
 /**
@@ -44,7 +44,7 @@ class InternalConversationSettingsFragment : DSLSettingsFragment(
     }
   )
 
-  override fun bindAdapter(adapter: DSLSettingsAdapter) {
+  override fun bindAdapter(adapter: MappingAdapter) {
     viewModel.state.observe(viewLifecycleOwner) { state ->
       adapter.submitList(getConfiguration(state).toMappingModelList())
     }
@@ -61,14 +61,21 @@ class InternalConversationSettingsFragment : DSLSettingsFragment(
       )
 
       if (!recipient.isGroup) {
-        val aci = recipient.aci.transform(ACI::toString).or("null")
+        val e164: String = recipient.e164.orElse("null")
         longClickPref(
-          title = DSLSettingsText.from("ACI"),
-          summary = DSLSettingsText.from(aci),
-          onLongClick = { copyToClipboard(aci) }
+          title = DSLSettingsText.from("E164"),
+          summary = DSLSettingsText.from(e164),
+          onLongClick = { copyToClipboard(e164) }
         )
 
-        val pni = recipient.pni.transform(PNI::toString).or("null")
+        val serviceId: String = recipient.serviceId.map { it.toString() }.orElse("null")
+        longClickPref(
+          title = DSLSettingsText.from("ServiceId"),
+          summary = DSLSettingsText.from(serviceId),
+          onLongClick = { copyToClipboard(serviceId) }
+        )
+
+        val pni: String = recipient.pni.map { it.toString() }.orElse("null")
         longClickPref(
           title = DSLSettingsText.from("PNI"),
           summary = DSLSettingsText.from(pni),
@@ -153,17 +160,36 @@ class InternalConversationSettingsFragment : DSLSettingsFragment(
               .setTitle("Are you sure?")
               .setNegativeButton(android.R.string.cancel) { d, _ -> d.dismiss() }
               .setPositiveButton(android.R.string.ok) { _, _ ->
-                if (recipient.hasAci()) {
-                  SignalDatabase.sessions.deleteAllFor(recipient.requireAci().toString())
-                }
-                if (recipient.hasE164()) {
-                  SignalDatabase.sessions.deleteAllFor(recipient.requireE164())
+                if (recipient.hasServiceId()) {
+                  SignalDatabase.sessions.deleteAllFor(serviceId = SignalStore.account().requireAci(), addressName = recipient.requireServiceId().toString())
                 }
               }
               .show()
           }
         )
       }
+
+      clickPref(
+        title = DSLSettingsText.from("Clear recipient data"),
+        summary = DSLSettingsText.from("Clears service id, profile data, sessions, identities, and thread."),
+        onClick = {
+          MaterialAlertDialogBuilder(requireContext())
+            .setTitle("Are you sure?")
+            .setNegativeButton(android.R.string.cancel) { d, _ -> d.dismiss() }
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+              if (recipient.hasServiceId()) {
+                SignalDatabase.recipients.debugClearServiceIds(recipient.id)
+                SignalDatabase.recipients.debugClearProfileData(recipient.id)
+                SignalDatabase.sessions.deleteAllFor(serviceId = SignalStore.account().requireAci(), addressName = recipient.requireServiceId().toString())
+                ApplicationDependencies.getProtocolStore().aci().identities().delete(recipient.requireServiceId().toString())
+                ApplicationDependencies.getProtocolStore().pni().identities().delete(recipient.requireServiceId().toString())
+                SignalDatabase.threads.deleteConversation(SignalDatabase.threads.getThreadIdIfExistsFor(recipient.id))
+              }
+              startActivity(MainActivity.clearTop(requireContext()))
+            }
+            .show()
+        }
+      )
 
       if (recipient.isSelf) {
         sectionHeaderPref(DSLSettingsText.from("Donations"))
@@ -197,8 +223,6 @@ class InternalConversationSettingsFragment : DSLSettingsFragment(
 
   private fun buildCapabilitySpan(recipient: Recipient): CharSequence {
     return TextUtils.concat(
-      colorize("GV2", recipient.groupsV2Capability),
-      ", ",
       colorize("GV1Migration", recipient.groupsV1MigrationCapability),
       ", ",
       colorize("AnnouncementGroup", recipient.announcementGroupCapability),
@@ -206,6 +230,8 @@ class InternalConversationSettingsFragment : DSLSettingsFragment(
       colorize("SenderKey", recipient.senderKeyCapability),
       ", ",
       colorize("ChangeNumber", recipient.changeNumberCapability),
+      ", ",
+      colorize("Stories", recipient.storiesCapability),
     )
   }
 
@@ -237,7 +263,7 @@ class InternalConversationSettingsFragment : DSLSettingsFragment(
 
       SignalExecutors.BOUNDED.execute {
         val threadId: Long? = SignalDatabase.threads.getThreadIdFor(recipientId)
-        val groupId: GroupId? = SignalDatabase.groups.getGroup(recipientId).transform { it.id }.orNull()
+        val groupId: GroupId? = SignalDatabase.groups.getGroup(recipientId).map { it.id }.orElse(null)
         store.update { state -> state.copy(threadId = threadId, groupId = groupId) }
       }
     }
@@ -252,7 +278,7 @@ class InternalConversationSettingsFragment : DSLSettingsFragment(
   }
 
   class MyViewModelFactory(val recipientId: RecipientId) : ViewModelProvider.NewInstanceFactory() {
-    override fun <T : ViewModel?> create(modelClass: Class<T>): T {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
       return Objects.requireNonNull(modelClass.cast(InternalViewModel(recipientId)))
     }
   }

@@ -3,8 +3,8 @@ package org.thoughtcrime.securesms.database
 import android.app.Application
 import android.content.Context
 import net.zetetic.database.sqlcipher.SQLiteOpenHelper
+import org.signal.core.util.SqlUtil
 import org.signal.core.util.logging.Log
-import org.thoughtcrime.securesms.contacts.ContactsDatabase
 import org.thoughtcrime.securesms.crypto.AttachmentSecret
 import org.thoughtcrime.securesms.crypto.DatabaseSecret
 import org.thoughtcrime.securesms.crypto.MasterSecret
@@ -16,15 +16,12 @@ import org.thoughtcrime.securesms.database.helpers.SignalDatabaseMigrations
 import org.thoughtcrime.securesms.database.helpers.SignalDatabaseMigrations.migrate
 import org.thoughtcrime.securesms.database.helpers.SignalDatabaseMigrations.migratePostTransaction
 import org.thoughtcrime.securesms.database.model.AvatarPickerDatabase
-import org.thoughtcrime.securesms.dependencies.ApplicationDependencies
-import org.thoughtcrime.securesms.jobs.RefreshPreKeysJob
+import org.thoughtcrime.securesms.jobs.PreKeysSyncJob
 import org.thoughtcrime.securesms.migrations.LegacyMigrationJob
 import org.thoughtcrime.securesms.migrations.LegacyMigrationJob.DatabaseUpgradeListener
 import org.thoughtcrime.securesms.service.KeyCachingService
-import org.thoughtcrime.securesms.util.SqlUtil
 import org.thoughtcrime.securesms.util.TextSecurePreferences
 import java.io.File
-import java.lang.UnsupportedOperationException
 
 open class SignalDatabase(private val context: Application, databaseSecret: DatabaseSecret, attachmentSecret: AttachmentSecret) :
   SQLiteOpenHelper(
@@ -50,7 +47,6 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
   val pushDatabase: PushDatabase = PushDatabase(context, this)
   val groupDatabase: GroupDatabase = GroupDatabase(context, this)
   val recipientDatabase: RecipientDatabase = RecipientDatabase(context, this)
-  val contactsDatabase: ContactsDatabase = ContactsDatabase(context)
   val groupReceiptDatabase: GroupReceiptDatabase = GroupReceiptDatabase(context, this)
   val preKeyDatabase: OneTimePreKeyDatabase = OneTimePreKeyDatabase(context, this)
   val signedPreKeyDatabase: SignedPreKeyDatabase = SignedPreKeyDatabase(context, this)
@@ -71,9 +67,14 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
   val groupCallRingDatabase: GroupCallRingDatabase = GroupCallRingDatabase(context, this)
   val reactionDatabase: ReactionDatabase = ReactionDatabase(context, this)
   val notificationProfileDatabase: NotificationProfileDatabase = NotificationProfileDatabase(context, this)
+  val donationReceiptDatabase: DonationReceiptDatabase = DonationReceiptDatabase(context, this)
+  val distributionListDatabase: DistributionListDatabase = DistributionListDatabase(context, this)
+  val storySendsDatabase: StorySendsDatabase = StorySendsDatabase(context, this)
+  val cdsDatabase: CdsDatabase = CdsDatabase(context, this)
+  val remoteMegaphoneDatabase: RemoteMegaphoneDatabase = RemoteMegaphoneDatabase(context, this)
+  val pendingPniSignatureMessageDatabase: PendingPniSignatureMessageDatabase = PendingPniSignatureMessageDatabase(context, this)
 
   override fun onOpen(db: net.zetetic.database.sqlcipher.SQLiteDatabase) {
-    db.enableWriteAheadLogging()
     db.setForeignKeyConstraintsEnabled(true)
   }
 
@@ -103,10 +104,16 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
     db.execSQL(AvatarPickerDatabase.CREATE_TABLE)
     db.execSQL(GroupCallRingDatabase.CREATE_TABLE)
     db.execSQL(ReactionDatabase.CREATE_TABLE)
+    db.execSQL(DonationReceiptDatabase.CREATE_TABLE)
+    db.execSQL(StorySendsDatabase.CREATE_TABLE)
+    db.execSQL(CdsDatabase.CREATE_TABLE)
+    db.execSQL(RemoteMegaphoneDatabase.CREATE_TABLE)
+    db.execSQL(PendingPniSignatureMessageDatabase.CREATE_TABLE)
     executeStatements(db, SearchDatabase.CREATE_TABLE)
     executeStatements(db, RemappedRecordsDatabase.CREATE_TABLE)
     executeStatements(db, MessageSendLogDatabase.CREATE_TABLE)
     executeStatements(db, NotificationProfileDatabase.CREATE_TABLE)
+    executeStatements(db, DistributionListDatabase.CREATE_TABLE)
 
     executeStatements(db, RecipientDatabase.CREATE_INDEXS)
     executeStatements(db, SmsDatabase.CREATE_INDEXS)
@@ -123,9 +130,15 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
     executeStatements(db, MessageSendLogDatabase.CREATE_INDEXES)
     executeStatements(db, GroupCallRingDatabase.CREATE_INDEXES)
     executeStatements(db, NotificationProfileDatabase.CREATE_INDEXES)
+    executeStatements(db, DonationReceiptDatabase.CREATE_INDEXS)
+    db.execSQL(StorySendsDatabase.CREATE_INDEX)
+    executeStatements(db, DistributionListDatabase.CREATE_INDEXES)
+    executeStatements(db, PendingPniSignatureMessageDatabase.CREATE_INDEXES)
 
     executeStatements(db, MessageSendLogDatabase.CREATE_TRIGGERS)
     executeStatements(db, ReactionDatabase.CREATE_TRIGGERS)
+
+    DistributionListDatabase.insertInitialDistributionListAtCreationTime(db)
 
     if (context.getDatabasePath(ClassicOpenHelper.NAME).exists()) {
       val legacyHelper = ClassicOpenHelper(context)
@@ -134,7 +147,7 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
       val masterSecret = KeyCachingService.getMasterSecret(context)
       if (masterSecret != null) SQLCipherMigrationHelper.migrateCiphertext(context, masterSecret, legacyDb, db, null) else TextSecurePreferences.setNeedsSqlCipherMigration(context, true)
       if (!PreKeyMigrationHelper.migratePreKeys(context, db)) {
-        ApplicationDependencies.getJobManager().add(RefreshPreKeysJob())
+        PreKeysSyncJob.enqueue()
       }
       SessionStoreMigrationHelper.migrateSessions(context, db)
       PreKeyMigrationHelper.cleanUpPreKeys(context)
@@ -202,6 +215,7 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
         synchronized(SignalDatabase::class.java) {
           if (instance == null) {
             instance = SignalDatabase(application, databaseSecret, attachmentSecret)
+            instance!!.setWriteAheadLoggingEnabled(true)
           }
         }
       }
@@ -221,6 +235,16 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
       get() = instance!!.rawWritableDatabase.inTransaction()
 
     @JvmStatic
+    fun runPostSuccessfulTransaction(dedupeKey: String, task: Runnable) {
+      instance!!.signalReadableDatabase.runPostSuccessfulTransaction(dedupeKey, task)
+    }
+
+    @JvmStatic
+    fun runPostSuccessfulTransaction(task: Runnable) {
+      instance!!.signalReadableDatabase.runPostSuccessfulTransaction(task)
+    }
+
+    @JvmStatic
     fun databaseFileExists(context: Context): Boolean {
       return context.getDatabasePath(DATABASE_NAME).exists()
     }
@@ -238,6 +262,7 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
         instance!!.sms.deleteAbandonedMessages()
         instance!!.mms.deleteAbandonedMessages()
         instance!!.mms.trimEntriesForExpiredMessages()
+        instance!!.reactionDatabase.deleteAbandonedReactions()
         instance!!.rawWritableDatabase.execSQL("DROP TABLE IF EXISTS key_value")
         instance!!.rawWritableDatabase.execSQL("DROP TABLE IF EXISTS megaphone")
         instance!!.rawWritableDatabase.execSQL("DROP TABLE IF EXISTS job_spec")
@@ -289,6 +314,17 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
       }
     }
 
+    @JvmStatic
+    fun runInTransaction(operation: Runnable) {
+      instance!!.signalWritableDatabase.beginTransaction()
+      try {
+        operation.run()
+        instance!!.signalWritableDatabase.setTransactionSuccessful()
+      } finally {
+        instance!!.signalWritableDatabase.endTransaction()
+      }
+    }
+
     @get:JvmStatic
     @get:JvmName("attachments")
     val attachments: AttachmentDatabase
@@ -300,14 +336,24 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
       get() = instance!!.avatarPickerDatabase
 
     @get:JvmStatic
+    @get:JvmName("cds")
+    val cds: CdsDatabase
+      get() = instance!!.cdsDatabase
+
+    @get:JvmStatic
     @get:JvmName("chatColors")
     val chatColors: ChatColorsDatabase
       get() = instance!!.chatColorsDatabase
 
     @get:JvmStatic
-    @get:JvmName("contacts")
-    val contacts: ContactsDatabase
-      get() = instance!!.contactsDatabase
+    @get:JvmName("distributionLists")
+    val distributionLists: DistributionListDatabase
+      get() = instance!!.distributionListDatabase
+
+    @get:JvmStatic
+    @get:JvmName("donationReceipts")
+    val donationReceipts: DonationReceiptDatabase
+      get() = instance!!.donationReceiptDatabase
 
     @get:JvmStatic
     @get:JvmName("drafts")
@@ -370,6 +416,11 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
       get() = instance!!.mmsSmsDatabase
 
     @get:JvmStatic
+    @get:JvmName("notificationProfiles")
+    val notificationProfiles: NotificationProfileDatabase
+      get() = instance!!.notificationProfileDatabase
+
+    @get:JvmStatic
     @get:JvmName("payments")
     val payments: PaymentDatabase
       get() = instance!!.paymentDatabase
@@ -380,8 +431,8 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
       get() = instance!!.pendingRetryReceiptDatabase
 
     @get:JvmStatic
-    @get:JvmName("preKeys")
-    val preKeys: OneTimePreKeyDatabase
+    @get:JvmName("oneTimePreKeys")
+    val oneTimePreKeys: OneTimePreKeyDatabase
       get() = instance!!.preKeyDatabase
 
     @get:Deprecated("This only exists to migrate from legacy storage. There shouldn't be any new usages.")
@@ -441,13 +492,23 @@ open class SignalDatabase(private val context: Application, databaseSecret: Data
       get() = instance!!.stickerDatabase
 
     @get:JvmStatic
+    @get:JvmName("storySends")
+    val storySends: StorySendsDatabase
+      get() = instance!!.storySendsDatabase
+
+    @get:JvmStatic
     @get:JvmName("unknownStorageIds")
     val unknownStorageIds: UnknownStorageIdDatabase
       get() = instance!!.storageIdDatabase
 
     @get:JvmStatic
-    @get:JvmName("notificationProfiles")
-    val notificationProfiles: NotificationProfileDatabase
-      get() = instance!!.notificationProfileDatabase
+    @get:JvmName("remoteMegaphones")
+    val remoteMegaphones: RemoteMegaphoneDatabase
+      get() = instance!!.remoteMegaphoneDatabase
+
+    @get:JvmStatic
+    @get:JvmName("pendingPniSignatureMessages")
+    val pendingPniSignatureMessages: PendingPniSignatureMessageDatabase
+      get() = instance!!.pendingPniSignatureMessageDatabase
   }
 }

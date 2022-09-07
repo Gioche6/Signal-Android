@@ -1,10 +1,5 @@
 package org.thoughtcrime.securesms.registration.fragments;
 
-import static org.thoughtcrime.securesms.registration.fragments.RegistrationViewDelegate.setDebugLogSubmitMultiTapView;
-import static org.thoughtcrime.securesms.registration.fragments.RegistrationViewDelegate.showConfirmNumberDialogIfTranslated;
-import static org.thoughtcrime.securesms.util.CircularProgressButtonUtil.cancelSpinning;
-import static org.thoughtcrime.securesms.util.CircularProgressButtonUtil.setSpinning;
-
 import android.content.Context;
 import android.os.Bundle;
 import android.text.TextUtils;
@@ -27,7 +22,6 @@ import androidx.navigation.NavController;
 import androidx.navigation.Navigation;
 import androidx.navigation.fragment.NavHostFragment;
 
-import com.dd.CircularProgressButton;
 import com.google.android.gms.auth.api.phone.SmsRetriever;
 import com.google.android.gms.auth.api.phone.SmsRetrieverClient;
 import com.google.android.gms.common.ConnectionResult;
@@ -43,7 +37,6 @@ import org.signal.core.util.logging.Log;
 import org.thoughtcrime.securesms.LoggingFragment;
 import org.thoughtcrime.securesms.R;
 import org.thoughtcrime.securesms.components.LabeledEditText;
-import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
 import org.thoughtcrime.securesms.registration.VerifyAccountRepository.Mode;
 import org.thoughtcrime.securesms.registration.util.RegistrationNumberInputController;
@@ -54,23 +47,27 @@ import org.thoughtcrime.securesms.util.Dialogs;
 import org.thoughtcrime.securesms.util.LifecycleDisposable;
 import org.thoughtcrime.securesms.util.PlayServicesUtil;
 import org.thoughtcrime.securesms.util.SupportEmailUtil;
-import org.thoughtcrime.securesms.util.TextSecurePreferences;
 import org.thoughtcrime.securesms.util.ViewUtil;
+import org.thoughtcrime.securesms.util.navigation.SafeNavigation;
+import org.thoughtcrime.securesms.util.views.CircularProgressMaterialButton;
 
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers;
 import io.reactivex.rxjava3.disposables.Disposable;
+
+import static org.thoughtcrime.securesms.registration.fragments.RegistrationViewDelegate.setDebugLogSubmitMultiTapView;
+import static org.thoughtcrime.securesms.registration.fragments.RegistrationViewDelegate.showConfirmNumberDialogIfTranslated;
 
 public final class EnterPhoneNumberFragment extends LoggingFragment implements RegistrationNumberInputController.Callbacks {
 
   private static final String TAG = Log.tag(EnterPhoneNumberFragment.class);
 
-  private LabeledEditText        countryCode;
-  private LabeledEditText        number;
-  private CircularProgressButton register;
-  private Spinner                countrySpinner;
-  private View                   cancel;
-  private ScrollView             scrollView;
-  private RegistrationViewModel  viewModel;
+  private LabeledEditText                countryCode;
+  private LabeledEditText                number;
+  private CircularProgressMaterialButton register;
+  private Spinner                        countrySpinner;
+  private View                           cancel;
+  private ScrollView                     scrollView;
+  private RegistrationViewModel          viewModel;
 
   private final LifecycleDisposable disposables = new LifecycleDisposable();
 
@@ -136,7 +133,7 @@ public final class EnterPhoneNumberFragment extends LoggingFragment implements R
   @Override
   public boolean onOptionsItemSelected(@NonNull MenuItem item) {
     if (item.getItemId() == R.id.phone_menu_use_proxy) {
-      Navigation.findNavController(requireView()).navigate(EnterPhoneNumberFragmentDirections.actionEditProxy());
+      SafeNavigation.safeNavigate(Navigation.findNavController(requireView()), EnterPhoneNumberFragmentDirections.actionEditProxy());
       return true;
     } else {
       return false;
@@ -180,7 +177,7 @@ public final class EnterPhoneNumberFragment extends LoggingFragment implements R
   }
 
   private void handleRequestVerification(@NonNull Context context, boolean fcmSupported) {
-    setSpinning(register);
+    register.setSpinning();
     disableAllEntries();
 
     if (fcmSupported) {
@@ -226,13 +223,13 @@ public final class EnterPhoneNumberFragment extends LoggingFragment implements R
                                   .observeOn(AndroidSchedulers.mainThread())
                                   .subscribe(processor -> {
                                     if (processor.hasResult()) {
-                                      navController.navigate(EnterPhoneNumberFragmentDirections.actionEnterVerificationCode());
+                                      SafeNavigation.safeNavigate(navController, EnterPhoneNumberFragmentDirections.actionEnterVerificationCode());
                                     } else if (processor.localRateLimit()) {
                                       Log.i(TAG, "Unable to request sms code due to local rate limit");
-                                      navController.navigate(EnterPhoneNumberFragmentDirections.actionEnterVerificationCode());
+                                      SafeNavigation.safeNavigate(navController, EnterPhoneNumberFragmentDirections.actionEnterVerificationCode());
                                     } else if (processor.captchaRequired()) {
                                       Log.i(TAG, "Unable to request sms code due to captcha required");
-                                      navController.navigate(EnterPhoneNumberFragmentDirections.actionRequestCaptcha());
+                                      SafeNavigation.safeNavigate(navController, EnterPhoneNumberFragmentDirections.actionRequestCaptcha());
                                     } else if (processor.rateLimit()) {
                                       Log.i(TAG, "Unable to request sms code due to rate limit");
                                       Toast.makeText(register.getContext(), R.string.RegistrationActivity_rate_limited_to_service, Toast.LENGTH_LONG).show();
@@ -248,7 +245,7 @@ public final class EnterPhoneNumberFragment extends LoggingFragment implements R
                                       Toast.makeText(register.getContext(), R.string.RegistrationActivity_unable_to_connect_to_service, Toast.LENGTH_LONG).show();
                                     }
 
-                                    cancelSpinning(register);
+                                    register.cancelSpinning();
                                     enableAllEntries();
                                   });
 
@@ -273,7 +270,7 @@ public final class EnterPhoneNumberFragment extends LoggingFragment implements R
 
   @Override
   public void onPickCountry(@NonNull View view) {
-    Navigation.findNavController(view).navigate(R.id.action_pickCountry);
+    SafeNavigation.safeNavigate(Navigation.findNavController(view), R.id.action_pickCountry);
   }
 
   @Override

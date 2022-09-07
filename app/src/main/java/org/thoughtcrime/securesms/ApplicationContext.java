@@ -21,6 +21,7 @@ import android.os.Build;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.VisibleForTesting;
 import androidx.annotation.WorkerThread;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.multidex.MultiDexApplication;
@@ -35,33 +36,40 @@ import org.signal.core.util.logging.AndroidLogger;
 import org.signal.core.util.logging.Log;
 import org.signal.core.util.tracing.Tracer;
 import org.signal.glide.SignalGlideCodecs;
+import org.signal.libsignal.protocol.logging.SignalProtocolLoggerProvider;
 import org.signal.ringrtc.CallManager;
 import org.thoughtcrime.securesms.avatar.AvatarPickerStorage;
 import org.thoughtcrime.securesms.crypto.AttachmentSecretProvider;
 import org.thoughtcrime.securesms.crypto.DatabaseSecretProvider;
 import org.thoughtcrime.securesms.database.LogDatabase;
-import org.thoughtcrime.securesms.database.SqlCipherLibraryLoader;
 import org.thoughtcrime.securesms.database.SignalDatabase;
+import org.thoughtcrime.securesms.database.SqlCipherLibraryLoader;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
 import org.thoughtcrime.securesms.dependencies.ApplicationDependencyProvider;
 import org.thoughtcrime.securesms.emoji.EmojiSource;
+import org.thoughtcrime.securesms.emoji.JumboEmoji;
 import org.thoughtcrime.securesms.gcm.FcmJobService;
-import org.thoughtcrime.securesms.jobs.CreateSignedPreKeyJob;
+import org.thoughtcrime.securesms.jobs.CheckServiceReachabilityJob;
 import org.thoughtcrime.securesms.jobs.DownloadLatestEmojiDataJob;
 import org.thoughtcrime.securesms.jobs.EmojiSearchIndexDownloadJob;
 import org.thoughtcrime.securesms.jobs.FcmRefreshJob;
-import org.thoughtcrime.securesms.jobs.GroupV1MigrationJob;
+import org.thoughtcrime.securesms.jobs.FontDownloaderJob;
+import org.thoughtcrime.securesms.jobs.GroupV2UpdateSelfProfileKeyJob;
 import org.thoughtcrime.securesms.jobs.MultiDeviceContactUpdateJob;
+import org.thoughtcrime.securesms.jobs.PreKeysSyncJob;
 import org.thoughtcrime.securesms.jobs.ProfileUploadJob;
 import org.thoughtcrime.securesms.jobs.PushNotificationReceiveJob;
-import org.thoughtcrime.securesms.jobs.RefreshPreKeysJob;
 import org.thoughtcrime.securesms.jobs.RetrieveProfileJob;
+import org.thoughtcrime.securesms.jobs.RetrieveRemoteAnnouncementsJob;
+import org.thoughtcrime.securesms.jobs.StoryOnboardingDownloadJob;
 import org.thoughtcrime.securesms.jobs.SubscriptionKeepAliveJob;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
 import org.thoughtcrime.securesms.logging.CustomSignalProtocolLogger;
 import org.thoughtcrime.securesms.logging.PersistentLogger;
 import org.thoughtcrime.securesms.messageprocessingalarm.MessageProcessReceiver;
 import org.thoughtcrime.securesms.migrations.ApplicationMigrations;
+import org.thoughtcrime.securesms.mms.SignalGlideComponents;
+import org.thoughtcrime.securesms.mms.SignalGlideModule;
 import org.thoughtcrime.securesms.notifications.NotificationChannels;
 import org.thoughtcrime.securesms.providers.BlobProvider;
 import org.thoughtcrime.securesms.ratelimit.RateLimitUtil;
@@ -74,21 +82,19 @@ import org.thoughtcrime.securesms.service.LocalBackupListener;
 import org.thoughtcrime.securesms.service.RotateSenderCertificateListener;
 import org.thoughtcrime.securesms.service.RotateSignedPreKeyListener;
 import org.thoughtcrime.securesms.service.UpdateApkRefreshListener;
+import org.thoughtcrime.securesms.service.webrtc.AndroidTelecomUtil;
 import org.thoughtcrime.securesms.storage.StorageSyncHelper;
 import org.thoughtcrime.securesms.util.AppForegroundObserver;
 import org.thoughtcrime.securesms.util.AppStartup;
 import org.thoughtcrime.securesms.util.DynamicTheme;
 import org.thoughtcrime.securesms.util.FeatureFlags;
-import org.thoughtcrime.securesms.util.ProfileUtil;
 import org.thoughtcrime.securesms.util.SignalLocalMetrics;
 import org.thoughtcrime.securesms.util.SignalUncaughtExceptionHandler;
 import org.thoughtcrime.securesms.util.TextSecurePreferences;
 import org.thoughtcrime.securesms.util.Util;
 import org.thoughtcrime.securesms.util.VersionTracker;
 import org.thoughtcrime.securesms.util.dynamiclanguage.DynamicLanguageContextWrapper;
-import org.whispersystems.libsignal.logging.SignalProtocolLoggerProvider;
 
-import java.io.IOException;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.security.Security;
@@ -168,28 +174,36 @@ public class ApplicationContext extends MultiDexApplication implements AppForegr
                             })
                             .addBlocking("blob-provider", this::initializeBlobProvider)
                             .addBlocking("feature-flags", FeatureFlags::init)
+                            .addBlocking("glide", () -> SignalGlideModule.setRegisterGlideComponents(new SignalGlideComponents()))
                             .addNonBlocking(this::cleanAvatarStorage)
                             .addNonBlocking(this::initializeRevealableMessageManager)
                             .addNonBlocking(this::initializePendingRetryReceiptManager)
                             .addNonBlocking(this::initializeFcmCheck)
-                            .addNonBlocking(this::initializeSignedPreKeyCheck)
+                            .addNonBlocking(PreKeysSyncJob::enqueueIfNeeded)
                             .addNonBlocking(this::initializePeriodicTasks)
                             .addNonBlocking(this::initializeCircumvention)
                             .addNonBlocking(this::initializePendingMessages)
                             .addNonBlocking(this::initializeCleanup)
                             .addNonBlocking(this::initializeGlideCodecs)
-                            .addNonBlocking(RefreshPreKeysJob::scheduleIfNecessary)
                             .addNonBlocking(StorageSyncHelper::scheduleRoutineSync)
                             .addNonBlocking(() -> ApplicationDependencies.getJobManager().beginJobLoop())
                             .addNonBlocking(EmojiSource::refresh)
                             .addNonBlocking(() -> ApplicationDependencies.getGiphyMp4Cache().onAppStart(this))
                             .addNonBlocking(this::ensureProfileUploaded)
+                            .addNonBlocking(() -> ApplicationDependencies.getExpireStoriesManager().scheduleIfNecessary())
                             .addPostRender(() -> RateLimitUtil.retryAllRateLimitedMessages(this))
                             .addPostRender(this::initializeExpiringMessageManager)
                             .addPostRender(() -> SignalStore.settings().setDefaultSms(Util.isDefaultSmsProvider(this)))
                             .addPostRender(() -> DownloadLatestEmojiDataJob.scheduleIfNecessary(this))
                             .addPostRender(EmojiSearchIndexDownloadJob::scheduleIfNecessary)
                             .addPostRender(() -> SignalDatabase.messageLog().trimOldMessages(System.currentTimeMillis(), FeatureFlags.retryRespondMaxAge()))
+                            .addPostRender(() -> JumboEmoji.updateCurrentVersion(this))
+                            .addPostRender(RetrieveRemoteAnnouncementsJob::enqueue)
+                            .addPostRender(() -> AndroidTelecomUtil.registerPhoneAccount())
+                            .addPostRender(() -> ApplicationDependencies.getJobManager().add(new FontDownloaderJob()))
+                            .addPostRender(CheckServiceReachabilityJob::enqueueIfNecessary)
+                            .addPostRender(GroupV2UpdateSelfProfileKeyJob::enqueueForGroupsIfNecessary)
+                            .addPostRender(StoryOnboardingDownloadJob.Companion::enqueueIfNeeded)
                             .execute();
 
     Log.d(TAG, "onCreate() took " + (System.currentTimeMillis() - startTime) + " ms");
@@ -205,17 +219,26 @@ public class ApplicationContext extends MultiDexApplication implements AppForegr
     ApplicationDependencies.getFrameRateTracker().start();
     ApplicationDependencies.getMegaphoneRepository().onAppForegrounded();
     ApplicationDependencies.getDeadlockDetector().start();
-    SubscriptionKeepAliveJob.launchSubscriberIdKeepAliveJobIfNecessary();
+    SubscriptionKeepAliveJob.enqueueAndTrackTimeIfNecessary();
 
     SignalExecutors.BOUNDED.execute(() -> {
       FeatureFlags.refreshIfNecessary();
       ApplicationDependencies.getRecipientCache().warmUp();
       RetrieveProfileJob.enqueueRoutineFetchIfNecessary(this);
-      GroupV1MigrationJob.enqueueRoutineMigrationsIfNecessary(this);
       executePendingContactSync();
       KeyCachingService.onAppForegrounded(this);
       ApplicationDependencies.getShakeToReport().enable();
       checkBuildExpiration();
+
+      long lastForegroundTime = SignalStore.misc().getLastForegroundTime();
+      long currentTime        = System.currentTimeMillis();
+      long timeDiff           = currentTime - lastForegroundTime;
+
+      if (timeDiff < 0) {
+        Log.w(TAG, "Time travel! The system clock has moved backwards. (currentTime: " + currentTime + " ms, lastForegroundTime: " + lastForegroundTime + " ms, diff: " + timeDiff + " ms)");
+      }
+
+      SignalStore.misc().setLastForegroundTime(currentTime);
     });
 
     Log.d(TAG, "onStart() took " + (System.currentTimeMillis() - startTime) + " ms");
@@ -315,7 +338,8 @@ public class ApplicationContext extends MultiDexApplication implements AppForegr
     ApplicationDependencies.getIncomingMessageObserver();
   }
 
-  private void initializeAppDependencies() {
+  @VisibleForTesting
+  void initializeAppDependencies() {
     ApplicationDependencies.init(this, new ApplicationDependencyProvider(this));
   }
 
@@ -344,12 +368,6 @@ public class ApplicationContext extends MultiDexApplication implements AppForegr
       if (SignalStore.account().getFcmToken() == null || nextSetTime <= System.currentTimeMillis()) {
         ApplicationDependencies.getJobManager().add(new FcmRefreshJob());
       }
-    }
-  }
-
-  private void initializeSignedPreKeyCheck() {
-    if (!TextSecurePreferences.isSignedPreKeyRegistered(this)) {
-      ApplicationDependencies.getJobManager().add(new CreateSignedPreKeyJob(this));
     }
   }
 

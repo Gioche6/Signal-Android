@@ -15,6 +15,7 @@ import org.thoughtcrime.securesms.dependencies.ApplicationDependencies;
 import org.thoughtcrime.securesms.jobmanager.Data;
 import org.thoughtcrime.securesms.jobmanager.Job;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
+import org.thoughtcrime.securesms.notifications.v2.ConversationId;
 import org.thoughtcrime.securesms.recipients.Recipient;
 import org.thoughtcrime.securesms.recipients.RecipientId;
 import org.thoughtcrime.securesms.recipients.RecipientUtil;
@@ -24,20 +25,19 @@ import org.thoughtcrime.securesms.transport.RetryLaterException;
 import org.thoughtcrime.securesms.transport.UndeliverableMessageException;
 import org.thoughtcrime.securesms.util.SignalLocalMetrics;
 import org.thoughtcrime.securesms.util.Util;
-import org.whispersystems.libsignal.util.guava.Optional;
 import org.whispersystems.signalservice.api.SignalServiceMessageSender;
 import org.whispersystems.signalservice.api.crypto.ContentHint;
 import org.whispersystems.signalservice.api.crypto.UnidentifiedAccessPair;
 import org.whispersystems.signalservice.api.crypto.UntrustedIdentityException;
 import org.whispersystems.signalservice.api.messages.SendMessageResult;
 import org.whispersystems.signalservice.api.messages.SignalServiceDataMessage;
-import org.whispersystems.signalservice.api.messages.multidevice.SignalServiceSyncMessage;
 import org.whispersystems.signalservice.api.push.SignalServiceAddress;
 import org.whispersystems.signalservice.api.push.exceptions.ProofRequiredException;
 import org.whispersystems.signalservice.api.push.exceptions.ServerRejectedException;
 import org.whispersystems.signalservice.api.push.exceptions.UnregisteredUserException;
 
 import java.io.IOException;
+import java.util.Optional;
 
 public class PushTextSendJob extends PushSendJob {
 
@@ -127,7 +127,7 @@ public class PushTextSendJob extends PushSendJob {
     } catch (InsecureFallbackApprovalException e) {
       warn(TAG, String.valueOf(record.getDateSent()), "Failure", e);
       database.markAsPendingInsecureSmsFallback(record.getId());
-      ApplicationDependencies.getMessageNotifier().notifyMessageDeliveryFailed(context, record.getRecipient(), record.getThreadId());
+      ApplicationDependencies.getMessageNotifier().notifyMessageDeliveryFailed(context, record.getRecipient(), ConversationId.forConversation(record.getThreadId()));
       ApplicationDependencies.getJobManager().add(new DirectoryRefreshJob(false));
     } catch (UntrustedIdentityException e) {
       warn(TAG, String.valueOf(record.getDateSent()), "Failure", e);
@@ -137,7 +137,7 @@ public class PushTextSendJob extends PushSendJob {
       database.markAsPush(record.getId());
       RetrieveProfileJob.enqueue(recipientId);
     } catch (ProofRequiredException e) {
-      handleProofRequiredException(e, record.getRecipient(), record.getThreadId(), messageId, false);
+      handleProofRequiredException(context, e, record.getRecipient(), record.getThreadId(), messageId, false);
     }
 
     SignalLocalMetrics.IndividualMessageSend.onJobFinished(messageId);
@@ -157,7 +157,7 @@ public class PushTextSendJob extends PushSendJob {
     Recipient recipient = SignalDatabase.threads().getRecipientForThreadId(threadId);
 
     if (threadId != -1 && recipient != null) {
-      ApplicationDependencies.getMessageNotifier().notifyMessageDeliveryFailed(context, recipient, threadId);
+      ApplicationDependencies.getMessageNotifier().notifyMessageDeliveryFailed(context, recipient, ConversationId.forConversation(threadId));
     }
   }
 
@@ -184,24 +184,28 @@ public class PushTextSendJob extends PushSendJob {
                                                                            .withTimestamp(message.getDateSent())
                                                                            .withBody(message.getBody())
                                                                            .withExpiration((int)(message.getExpiresIn() / 1000))
-                                                                           .withProfileKey(profileKey.orNull())
+                                                                           .withProfileKey(profileKey.orElse(null))
                                                                            .asEndSessionMessage(message.isEndSession())
                                                                            .build();
 
-      if (Util.equals(SignalStore.account().getAci(), address.getAci())) {
+      if (Util.equals(SignalStore.account().getAci(), address.getServiceId())) {
         Optional<UnidentifiedAccessPair> syncAccess  = UnidentifiedAccessUtil.getAccessForSync(context);
-        SignalServiceSyncMessage         syncMessage = buildSelfSendSyncMessage(context, textSecureMessage, syncAccess);
 
         SignalLocalMetrics.IndividualMessageSend.onDeliveryStarted(messageId);
-        SendMessageResult result = messageSender.sendSyncMessage(syncMessage, syncAccess);
+        SendMessageResult result = messageSender.sendSyncMessage(textSecureMessage);
 
-        SignalDatabase.messageLog().insertIfPossible(messageRecipient.getId(), message.getDateSent(), result, ContentHint.RESENDABLE, new MessageId(messageId, false));
+        SignalDatabase.messageLog().insertIfPossible(messageRecipient.getId(), message.getDateSent(), result, ContentHint.RESENDABLE, new MessageId(messageId, false), false);
         return syncAccess.isPresent();
       } else {
         SignalLocalMetrics.IndividualMessageSend.onDeliveryStarted(messageId);
-        SendMessageResult result = messageSender.sendDataMessage(address, unidentifiedAccess, ContentHint.RESENDABLE, textSecureMessage, new MetricEventListener(messageId));
+        SendMessageResult result = messageSender.sendDataMessage(address, unidentifiedAccess, ContentHint.RESENDABLE, textSecureMessage, new MetricEventListener(messageId), true, messageRecipient.needsPniSignature());
 
-        SignalDatabase.messageLog().insertIfPossible(messageRecipient.getId(), message.getDateSent(), result, ContentHint.RESENDABLE, new MessageId(messageId, false));
+        SignalDatabase.messageLog().insertIfPossible(messageRecipient.getId(), message.getDateSent(), result, ContentHint.RESENDABLE, new MessageId(messageId, false), true);
+
+        if (messageRecipient.needsPniSignature()) {
+          SignalDatabase.pendingPniSignatureMessages().insertIfNecessary(messageRecipient.getId(), message.getDateSent(), result);
+        }
+
         return result.getSuccess().isUnidentified();
       }
     } catch (UnregisteredUserException e) {

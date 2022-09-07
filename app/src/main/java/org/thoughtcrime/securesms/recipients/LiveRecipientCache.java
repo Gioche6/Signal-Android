@@ -6,8 +6,7 @@ import android.database.Cursor;
 
 import androidx.annotation.AnyThread;
 import androidx.annotation.NonNull;
-
-import net.zetetic.database.sqlcipher.SQLiteDatabase;
+import androidx.annotation.Nullable;
 
 import org.signal.core.util.ThreadUtil;
 import org.signal.core.util.concurrent.SignalExecutors;
@@ -18,9 +17,9 @@ import org.thoughtcrime.securesms.database.SignalDatabase;
 import org.thoughtcrime.securesms.database.ThreadDatabase;
 import org.thoughtcrime.securesms.database.model.ThreadRecord;
 import org.thoughtcrime.securesms.keyvalue.SignalStore;
-import org.thoughtcrime.securesms.util.CursorUtil;
+import org.signal.core.util.CursorUtil;
 import org.thoughtcrime.securesms.util.LRUCache;
-import org.thoughtcrime.securesms.util.Stopwatch;
+import org.signal.core.util.Stopwatch;
 import org.thoughtcrime.securesms.util.concurrent.FilteredExecutor;
 import org.whispersystems.signalservice.api.push.ACI;
 
@@ -57,7 +56,7 @@ public final class LiveRecipientCache {
     this.warmedUp          = new AtomicBoolean(false);
     this.localRecipientId  = new AtomicReference<>(null);
     this.unknown           = new LiveRecipient(context, Recipient.UNKNOWN);
-    this.resolveExecutor   = ThreadUtil.trace(new FilteredExecutor(SignalExecutors.BOUNDED, () -> !SignalDatabase.inTransaction()));
+    this.resolveExecutor   = ThreadUtil.trace(new FilteredExecutor(SignalExecutors.newCachedBoundedExecutor("signal-recipients", 1, 4, 15), () -> !SignalDatabase.inTransaction()));
   }
 
   @AnyThread
@@ -152,16 +151,20 @@ public final class LiveRecipientCache {
       ACI    localAci  = SignalStore.account().getAci();
       String localE164 = SignalStore.account().getE164();
 
-      if (localAci != null) {
-        selfId = recipientDatabase.getByAci(localAci).or(recipientDatabase.getByE164(localE164)).orNull();
-      } else if (localE164 != null) {
-        selfId = recipientDatabase.getByE164(localE164).orNull();
-      } else {
+      if (localAci == null && localE164 == null) {
         throw new IllegalStateException("Tried to call getSelf() before local data was set!");
       }
 
+      if (localAci != null) {
+        selfId = recipientDatabase.getByServiceId(localAci).orElse(null);
+      }
+
+      if (selfId == null && localE164 != null) {
+        selfId = recipientDatabase.getByE164(localE164).orElse(null);
+      }
+
       if (selfId == null) {
-        selfId = recipientDatabase.getAndPossiblyMerge(localAci, localE164, false);
+        selfId = recipientDatabase.getAndPossiblyMerge(localAci, localE164);
       }
 
       synchronized (localRecipientId) {
@@ -172,6 +175,28 @@ public final class LiveRecipientCache {
     }
 
     return getLive(selfId).resolve();
+  }
+
+  /** Can safely get self id. If used during early registration (backup), will return null as we don't know self yet. */
+  @Nullable RecipientId getSelfId() {
+    RecipientId selfId;
+
+    synchronized (localRecipientId) {
+      selfId = localRecipientId.get();
+    }
+
+    if (selfId != null) {
+      return selfId;
+    }
+
+    ACI    localAci  = SignalStore.account().getAci();
+    String localE164 = SignalStore.account().getE164();
+
+    if (localAci == null && localE164 == null) {
+      return null;
+    } else {
+      return getSelf().getId();
+    }
   }
 
   @AnyThread
@@ -201,7 +226,7 @@ public final class LiveRecipientCache {
 
       stopwatch.split("thread");
 
-      if (SignalStore.registrationValues().isRegistrationComplete()) {
+      if (SignalStore.registrationValues().isRegistrationComplete() && SignalStore.account().getAci() != null) {
         try (Cursor cursor = SignalDatabase.recipients().getNonGroupContacts(false)) {
           int count = 0;
           while (cursor != null && cursor.moveToNext() && count < CONTACT_CACHE_WARM_MAX) {
@@ -235,6 +260,6 @@ public final class LiveRecipientCache {
   }
 
   private boolean isValidForCache(@NonNull Recipient recipient) {
-    return !recipient.getId().isUnknown() && (recipient.hasServiceIdentifier() || recipient.getGroupId().isPresent() || recipient.hasSmsAddress());
+    return !recipient.getId().isUnknown() && (recipient.hasServiceId() || recipient.getGroupId().isPresent() || recipient.hasSmsAddress());
   }
 }
